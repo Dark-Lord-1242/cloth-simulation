@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 
-<title>Sparkling Cloth Simulation</title> 
+<title>Sparkling Cloth Simulation with Hand Control</title> 
 
 <style>
 html, body {
@@ -19,6 +19,18 @@ html, body {
 
 canvas {
   display: block;
+}
+
+#videoCanvas {
+  position: fixed;
+  bottom: 180px;
+  right: 15px;
+  width: 160px;
+  height: 120px;
+  border: 2px solid rgba(0, 212, 255, 0.5);
+  border-radius: 8px;
+  display: none;
+  z-index: 1000;
 }
 
 .info {
@@ -41,11 +53,16 @@ canvas {
   pointer-events: none;
 }
 
-#restartBtn {
+.controls {
   position: fixed;
   top: 10px;
   right: 15px;
   z-index: 9999;
+  display: flex;
+  gap: 10px;
+}
+
+.btn {
   padding: 10px 16px;
   font-size: 14px;
   background: linear-gradient(135deg, #00d4ff, #0080ff);
@@ -58,8 +75,33 @@ canvas {
   box-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
 }
 
-#restartBtn:active {
+.btn:active {
   transform: scale(0.95);
+}
+
+.btn.camera-active {
+  background: linear-gradient(135deg, #00ff88, #00aa55);
+  box-shadow: 0 0 20px rgba(0, 255, 136, 0.5);
+}
+
+/* Hand gesture indicator */
+.gesture-indicator {
+  position: fixed;
+  bottom: 310px;
+  right: 15px;
+  background: rgba(0, 0, 0, 0.85);
+  padding: 10px 15px;
+  border-radius: 8px;
+  border: 2px solid rgba(0, 212, 255, 0.3);
+  color: #00d4ff;
+  font-size: 12px;
+  font-weight: bold;
+  display: none;
+  z-index: 1000;
+}
+
+.gesture-indicator.active {
+  display: block;
 }
 
 /* Gravity control panel */
@@ -175,15 +217,39 @@ canvas {
   .gravity-value {
     font-size: 16px;
   }
+
+  #videoCanvas {
+    bottom: 180px;
+    right: 15px;
+    width: 120px;
+    height: 90px;
+  }
+
+  .gesture-indicator {
+    bottom: 310px;
+    right: 15px;
+    font-size: 10px;
+    padding: 8px 12px;
+  }
+
+  .controls {
+    flex-direction: column;
+  }
 }
 </style>
 </head>
 
 <body>
 
-<button id="restartBtn">Restart</button>
+<div class="controls">
+  <button id="restartBtn" class="btn">Restart</button>
+  <button id="cameraBtn" class="btn">📷 Camera</button>
+</div>
 
-<div class="info">Drag • Right click or Hold to tear</div>
+<canvas id="videoCanvas"></canvas>
+<div id="gestureIndicator" class="gesture-indicator"></div>
+
+<div class="info">Drag • Right click or Hold to tear • ✊ Fist=Grab ✌️ Scissors=Cut</div>
 <div class="naman">Created by Dark Lord</div>
 
 <!-- Gravity Control Panel -->
@@ -199,12 +265,21 @@ canvas {
 
 <canvas id="canvas"></canvas>
 
+<!-- MediaPipe Hands -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+
 <script>
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
+const videoCanvas = document.getElementById("videoCanvas");
+const videoCtx = videoCanvas.getContext("2d");
 const restartBtn = document.getElementById("restartBtn");
+const cameraBtn = document.getElementById("cameraBtn");
 const gravitySlider = document.getElementById("gravitySlider");
 const gravityValue = document.getElementById("gravityValue");
+const gestureIndicator = document.getElementById("gestureIndicator");
 
 let points = [];
 let sticks = [];
@@ -225,6 +300,15 @@ const friction = 0.99;
 // Sparkle effect variables
 let time = 0;
 const sparkles = [];
+
+// Hand tracking variables
+let cameraActive = false;
+let hands, camera;
+let handDetected = false;
+let handX = 0;
+let handY = 0;
+let isFist = false;
+let isScissors = false;
 
 // Update gravity from slider
 gravitySlider.addEventListener('input', (e) => {
@@ -338,6 +422,167 @@ function init() {
   }
 }
 
+// Hand gesture detection
+function detectGesture(landmarks) {
+  if (!landmarks || landmarks.length === 0) return { isFist: false, isScissors: false };
+  
+  const hand = landmarks[0];
+  
+  // Key landmarks
+  const palmBase = hand[0]; // Wrist
+  const thumbTip = hand[4];
+  const indexTip = hand[8];
+  const indexMid = hand[6];
+  const middleTip = hand[12];
+  const middleMid = hand[10];
+  const ringTip = hand[16];
+  const ringMid = hand[14];
+  const pinkyTip = hand[20];
+  const pinkyMid = hand[18];
+  
+  // Calculate if fingers are extended by comparing tip to middle joint
+  const indexExtended = distance(indexTip, palmBase) > distance(indexMid, palmBase) + 0.05;
+  const middleExtended = distance(middleTip, palmBase) > distance(middleMid, palmBase) + 0.05;
+  const ringExtended = distance(ringTip, palmBase) > distance(ringMid, palmBase) + 0.05;
+  const pinkyExtended = distance(pinkyTip, palmBase) > distance(pinkyMid, palmBase) + 0.05;
+  
+  // Scissors gesture: only index and middle fingers extended, others closed
+  const isScissors = indexExtended && middleExtended && !ringExtended && !pinkyExtended;
+  
+  // Fist: all fingers are curled (tips close to palm or behind middle joints)
+  // More lenient detection - if 3 or 4 fingers are clearly not extended, it's a fist
+  const closedFingers = [!indexExtended, !middleExtended, !ringExtended, !pinkyExtended].filter(x => x).length;
+  const isFist = closedFingers >= 3 && !isScissors;
+  
+  return { isFist, isScissors };
+}
+
+function distance(p1, p2) {
+  return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2) + Math.pow(p1.z - p2.z, 2));
+}
+
+// MediaPipe Hands setup
+async function initCamera() {
+  if (cameraActive) {
+    stopCamera();
+    return;
+  }
+
+  try {
+    hands = new Hands({
+      locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+      }
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    hands.onResults(onHandResults);
+
+    const video = document.createElement('video');
+    camera = new Camera(video, {
+      onFrame: async () => {
+        await hands.send({ image: video });
+      },
+      width: 640,
+      height: 480
+    });
+
+    await camera.start();
+    cameraActive = true;
+    cameraBtn.classList.add('camera-active');
+    cameraBtn.textContent = '📷 Stop';
+    videoCanvas.style.display = 'block';
+    gestureIndicator.classList.add('active');
+  } catch (error) {
+    console.error('Camera initialization failed:', error);
+    alert('Failed to access camera. Please grant camera permissions.');
+  }
+}
+
+function stopCamera() {
+  if (camera) {
+    camera.stop();
+    camera = null;
+  }
+  if (hands) {
+    hands.close();
+    hands = null;
+  }
+  cameraActive = false;
+  cameraBtn.classList.remove('camera-active');
+  cameraBtn.textContent = '📷 Camera';
+  videoCanvas.style.display = 'none';
+  gestureIndicator.classList.remove('active');
+  handDetected = false;
+  mouse.down = false;
+}
+
+function onHandResults(results) {
+  // Draw video feed
+  videoCanvas.width = 160;
+  videoCanvas.height = 120;
+  videoCtx.save();
+  videoCtx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
+  videoCtx.drawImage(results.image, 0, 0, videoCanvas.width, videoCanvas.height);
+  
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+    handDetected = true;
+    const landmarks = results.multiHandLandmarks[0];
+    
+    // Draw hand skeleton on video
+    drawConnectors(videoCtx, landmarks, HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 2 });
+    drawLandmarks(videoCtx, landmarks, { color: '#FF0000', lineWidth: 1, radius: 2 });
+    
+    // Get index finger tip position (landmark 8)
+    const indexTip = landmarks[8];
+    handX = (1 - indexTip.x) * canvas.width; // Mirror X
+    handY = indexTip.y * canvas.height;
+    
+    // Detect gesture
+    const gesture = detectGesture(results.multiHandLandmarks);
+    isFist = gesture.isFist;
+    isScissors = gesture.isScissors;
+    
+    // Update mouse state based on gesture
+    if (isFist) {
+      mouse.px = mouse.x;
+      mouse.py = mouse.y;
+      mouse.x = handX;
+      mouse.y = handY;
+      mouse.down = true;
+      mouse.button = 0; // Left button (grab/drag)
+      gestureIndicator.textContent = '✊ Fist - Grabbing';
+      gestureIndicator.style.borderColor = 'rgba(0, 255, 136, 0.5)';
+    } else if (isScissors) {
+      mouse.px = mouse.x;
+      mouse.py = mouse.y;
+      mouse.x = handX;
+      mouse.y = handY;
+      mouse.down = true;
+      mouse.button = 2; // Right button (tear)
+      gestureIndicator.textContent = '✌️ Scissors - Cutting';
+      gestureIndicator.style.borderColor = 'rgba(255, 100, 0, 0.5)';
+    } else {
+      mouse.down = false;
+      mouse.button = 0;
+      gestureIndicator.textContent = '✋ Hand Detected';
+      gestureIndicator.style.borderColor = 'rgba(0, 212, 255, 0.3)';
+    }
+  } else {
+    handDetected = false;
+    gestureIndicator.textContent = '🔍 Looking for hand...';
+    gestureIndicator.style.borderColor = 'rgba(255, 0, 0, 0.3)';
+  }
+  
+  videoCtx.restore();
+}
+
 function update() {
   time += 0.05;
   
@@ -354,6 +599,38 @@ function update() {
   gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Draw hand cursor if active
+  if (handDetected && cameraActive) {
+    const cursorSize = isFist ? 18 : isScissors ? 25 : 15;
+    const cursorColor = isFist ? 'rgba(0, 255, 136, 0.8)' : 
+                       isScissors ? 'rgba(255, 100, 0, 0.8)' : 
+                       'rgba(0, 212, 255, 0.8)';
+    
+    // Outer glow
+    ctx.fillStyle = cursorColor;
+    ctx.beginPath();
+    ctx.arc(handX, handY, cursorSize + 5, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Inner circle
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.beginPath();
+    ctx.arc(handX, handY, cursorSize, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Draw scissors icon when in scissors mode
+    if (isScissors) {
+      ctx.strokeStyle = 'rgba(255, 100, 0, 1)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(handX - 10, handY - 10);
+      ctx.lineTo(handX + 10, handY + 10);
+      ctx.moveTo(handX + 10, handY - 10);
+      ctx.lineTo(handX - 10, handY + 10);
+      ctx.stroke();
+    }
+  }
 
   // Update points
   points.forEach(p => {
@@ -460,6 +737,7 @@ function update() {
 
 /* POINTER EVENTS */
 canvas.addEventListener("pointerdown", e => {
+  if (cameraActive) return; // Disable mouse when camera is active
   canvas.setPointerCapture(e.pointerId);
   mouse.down = true;
   mouse.button = e.button;
@@ -474,11 +752,13 @@ canvas.addEventListener("pointerdown", e => {
 });
 
 canvas.addEventListener("pointermove", e => {
+  if (cameraActive) return;
   mouse.x = e.clientX;
   mouse.y = e.clientY;
 });
 
 canvas.addEventListener("pointerup", () => {
+  if (cameraActive) return;
   mouse.down = false;
   mouse.button = 0;
 });
@@ -490,6 +770,11 @@ restartBtn.addEventListener("click", e => {
   init();
 });
 
+cameraBtn.addEventListener("click", e => {
+  e.stopPropagation();
+  initCamera();
+});
+
 window.addEventListener("resize", init);
 
 init();
@@ -497,4 +782,4 @@ update();
 </script>
 
 </body>
-</html>  
+</html>
