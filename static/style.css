@@ -1,0 +1,65 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: Arial, sans-serif;
+}
+
+/* HERO */
+.hero {
+    position: relative;
+    height: 100vh;
+    background-image: url("/static/6600682_3306612.jpg");
+    background-size: cover;
+    background-position: center;
+}
+
+/* затемнение */
+.overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+}
+
+/* контент */
+.content {
+    position: relative;
+    z-index: 1;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    color: white;
+    text-align: center;
+    padding: 20px;
+}
+
+.content h1 {
+    font-size: 64px;
+    margin-bottom: 20px;
+}
+
+.content p {
+    font-size: 20px;
+    margin-bottom: 30px;
+    opacity: 0.85;
+}
+
+/* кнопка */
+.btn {
+    text-decoration: none;
+    padding: 14px 32px;
+    border-radius: 30px;
+    background: white;
+    color: black;
+    font-weight: bold;
+    transition: 0.3s;
+}
+
+.btn:hover {
+    background: #eaeaea;
+}
